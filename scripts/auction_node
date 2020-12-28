@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# ROS
+import rospy
+
+import time
+import requests
+from collections import namedtuple
+
+from robonomics_msgs.msg import Offer
+from ethereum_common.msg import Address, UInt256
+from ethereum_common.srv import Accounts, BlockNumber
+from ipfs_common.msg import Multihash
+from robonomics_liability.msg import Liability
+from robonomics_liability.srv import StartLiability, FinishLiability
+
+class AuctionNode:
+
+    START_INTERVAL_CHECK = 1        # seconds
+    AUCTION_OVER_TIME = 1609459200  # 01/01/2021 @ 12:00am (UTC)
+    AUCTION_API_URL = "https://auction.gaka-chu.online/list"
+
+    def __init__(self):
+        rospy.init_node("auction")
+        rospy.loginfo("Launching auction node...")
+
+        # AIRA ethereum addresses
+        rospy.wait_for_service("/eth/current_block")
+        rospy.wait_for_service("/eth/accounts")
+        self.accounts = rospy.ServiceProxy("/eth/accounts", Accounts)()
+        rospy.loginfo(str(self.accounts))
+
+        # Liability
+        rospy.Subscriber("/liability/ready", Liability, self.transfer_rights)
+        rospy.wait_for_service("/liability/finish")
+        self.liability_proxy = namedtuple("liability_srvs_proxy", ["start", "finish"])(
+                                          rospy.ServiceProxy("/liability/start", StartLiability),
+                                          rospy.ServiceProxy("/liability/finish", FinishLiability))
+
+        # Offer topic
+        self.signing_offer = rospy.Publisher("/liability/infochan/eth/signing/offer", Offer, queue_size=128)
+
+        # Get parameters
+        self.MODEL = rospy.get_param("~model")
+        self.TOKEN = rospy.get_param("~token")
+
+        rospy.loginfo("Auction node is launched")
+
+    def transfer_rights(self, liability: Liability):
+        pass
+
+    def _make_deadline(self):
+        lifetime = int(rospy.get_param("~order_lifetime"))
+        deadline = rospy.ServiceProxy("/eth/current_block", BlockNumber)().number + lifetime
+        return UInt256(str(deadline))
+
+    def send_offer(row: dict):
+        rospy.loginfo(f"Making an offer for the row: {row}")
+
+        offer = Offer()
+        offer.model = Multihash(self.MODEL)
+        offer.objective = Multihash(row["objective"])
+        offer.token = Address(self.TOKEN)
+        offer.cost = UInt256(str(row["cost"]))
+        offer.lighthouse = Address("0x420029e64F849AA3De300D2ad86075aD32f01680")
+        offer.validator = Address("0x0000000000000000000000000000000000000000")
+        offer.lighthouseFee = UInt256("0")
+        offer.deadline = self._make_deadline()
+
+        self.signing_offer.publish(offer)
+        rospy.loginfo("Offer is sent!")
+
+    def spin(self):
+        def start_auction():
+            current_time = int(time.time())
+
+            if current_time >= self.AUCTION_OVER_TIME:
+                response = requests.request("GET", self.AUCTION_API_URL)
+                drawings_list = response.json()
+
+                rospy.loginfo(f"Recieved response from API: {drawings_list}")
+
+                for d in drawings_list["result"]:
+                    self.send_offer(d)
+            else:
+                rospy.loginfo(f"Current time {current_time}. Auction is not over yet...")
+                Timer(self.START_INTERVAL_CHECK, start_auction).start()
+
+        start_auction()
+        rospy.spin()
+
+
+if __name__ == "__main__":
+    AuctionNode().spin()
+
