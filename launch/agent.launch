@@ -2,5 +2,6 @@
     <node ns="gakachu" name="auction" pkg="gakachu-auction-agent" type="auction_node" output="screen" respawn="true">
         <param name="model" value="QmWZsRae58t2jnVcHaUBYrWMdaM6vwvpSs264Cmg3MrwY6" />
         <param name="token" value="0x7dE91B204C1C737bcEe6F000AAA6569Cf7061cb7" />
+        <param name="order_lifetime" value="1000" />
     </node>
 </launch>

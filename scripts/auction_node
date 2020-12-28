@@ -6,11 +6,13 @@ import rospy
 import time
 import requests
 from collections import namedtuple
+from threading import Timer
 
 from robonomics_msgs.msg import Offer
 from ethereum_common.msg import Address, UInt256
 from ethereum_common.srv import Accounts, BlockNumber
 from ipfs_common.msg import Multihash
+from ipfs_common.ipfs_rosbag import IpfsRosBag
 from robonomics_liability.msg import Liability
 from robonomics_liability.srv import StartLiability, FinishLiability
 
@@ -32,10 +34,7 @@ class AuctionNode:
 
         # Liability
         rospy.Subscriber("/liability/ready", Liability, self.transfer_rights)
-        rospy.wait_for_service("/liability/finish")
-        self.liability_proxy = namedtuple("liability_srvs_proxy", ["start", "finish"])(
-                                          rospy.ServiceProxy("/liability/start", StartLiability),
-                                          rospy.ServiceProxy("/liability/finish", FinishLiability))
+        self._init_services()
 
         # Offer topic
         self.signing_offer = rospy.Publisher("/liability/infochan/eth/signing/offer", Offer, queue_size=128)
@@ -46,15 +45,38 @@ class AuctionNode:
 
         rospy.loginfo("Auction node is launched")
 
+    def _init_services(self):
+        rospy.wait_for_service("/liability/finish")
+
+        self.liability_proxy = namedtuple("liability_srvs_proxy", ["start", "finish"])(
+                                          rospy.ServiceProxy("/liability/start", StartLiability),
+                                          rospy.ServiceProxy("/liability/finish", FinishLiability))
+
     def transfer_rights(self, liability: Liability):
-        pass
+        if liability.model.multihash != self.MODEL:
+            rospy.loginfo("Liability is not for me")
+            return
+
+        rospy.loginfo("Starting process {}...".format(liability.address.address))
+        self.liability_proxy.start(liability.address)
+
+        rospy.sleep(2)  # allow all publishers to be registered
+
+        rospy.loginfo("Downloading the objective [{}]".format(liability.objective.multihash))
+        bag = IpfsRosBag(multihash=liability.objective)
+        # each message is published every second, so we wait `messages` seconds
+        rospy.sleep(bag.bag.get_message_count())
+
+        rospy.loginfo("Finishing...")
+        self._init_services()
+        self.liability_proxy.finish(liability.address, True)
 
     def _make_deadline(self):
         lifetime = int(rospy.get_param("~order_lifetime"))
         deadline = rospy.ServiceProxy("/eth/current_block", BlockNumber)().number + lifetime
         return UInt256(str(deadline))
 
-    def send_offer(row: dict):
+    def send_offer(self, row: dict):
         rospy.loginfo(f"Making an offer for the row: {row}")
 
         offer = Offer()
